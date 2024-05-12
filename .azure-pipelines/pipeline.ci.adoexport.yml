@@ -1,0 +1,105 @@
+name: "Export Azure DevOps repositories" # Name of the pipeline
+
+trigger: none # Pipeline is not triggered automatically
+
+schedules: # Define schedules for pipeline runs
+  - cron: "0 12 * * *" # Run daily at midnight
+    displayName: Daily midnight run # Display name for the schedule
+    branches:
+      include:
+        - main # Only run on the 'main' branch
+    always: true # Run even if there are no code changes
+
+pool:
+  vmImage: "windows-latest" # Use the latest Windows agent
+
+steps:
+  - checkout: self # Checkout the source code from the repository
+    persistCredentials: true # Persist credentials for subsequent steps
+    displayName: "Checkout code" # Display name for the step
+
+  - task: AzureCLI@2 # Use Azure CLI task
+    displayName: "Clone Azure DevOps Repositories" # Display name for the step
+    inputs:
+      azureSubscription: "$(azServiceConnection)" # Azure subscription to use
+      scriptType: "ps" # Use PowerShell script
+      scriptLocation: "scriptPath" # Script location is a file path
+      scriptPath: "$(Build.Repository.LocalPath)/Export-AzDevOpsRepos.ps1" # Path to the PowerShell script
+    env:
+      PAT: $(PAT) # Personal Access Token for authentication
+      AzDevOpsOrg: $(AzDevOpsOrg) # Azure DevOps organization
+
+  # Log the end of the repository cloning process
+  - task: PowerShell@2
+    displayName: 'Log End of Repository Cloning Process'
+    condition: succeeded()
+    inputs:
+      targetType: 'inline'
+      script: |
+        Write-Host "Repository cloning process completed"
+
+  - task: AzureCLI@2 # Use Azure CLI task
+    displayName: Allow Public Access to Azure DevOps Export Storage Account for upload # Display name for the step
+    condition: succeeded() # Run only if the previous step succeeded
+    inputs:
+      azureSubscription: "$(azServiceConnection)" # Azure subscription to use
+      scriptType: bash # Use Bash script
+      scriptLocation: inlineScript # Script location is inline
+      inlineScript: |
+        az storage account update --name "${storageAccount}"  --resource-group "${storageAccountRG}" --default-action Allow  # Allow public access to the storage account
+
+  - task: AzureCLI@2 # Use Azure CLI task
+    displayName: "Check Storage Network Access" # Display name for the step
+    condition: succeeded() # Run only if the previous step succeeded
+    timeoutInMinutes: 10 # Timeout after 10 minutes
+    continueOnError: true # Continue even if the step fails
+    name: check_storage_access # Name of the step
+    inputs:
+      azureSubscription: "$(azServiceConnection)" # Azure subscription to use
+      scriptType: bash # Use Bash script
+      scriptLocation: inlineScript # Script location is inline
+      inlineScript: |
+        echo -e "Setting up authentication..."
+        export AZURE_STORAGE_ACCOUNT=${storageAccount}
+        export AZURE_STORAGE_KEY=$(az storage account keys list --account-name ${storageAccount} --query '[0].value' --output tsv)
+        echo -e "Checking storage account access every 60 seconds..."
+        sleep 10
+        for i in {1..60}; do
+          if az storage container list --output none; then
+            echo "Access granted"
+            break
+          else
+            echo "Access denied, retrying in 60 seconds..."
+            sleep 60
+          fi
+        done
+
+  - task: DownloadPipelineArtifact@2 # Download pipeline artifacts
+    displayName: "Download Build Artifacts" # Display name for the step
+    inputs:
+      patterns: "**/*.zip" # Include all ZIP files
+      path: "$(Build.ArtifactStagingDirectory)" # Download artifacts to the staging directory
+
+  #Storage account needs the SPN to have Storage Blob Data Contributor role, to allow blob upload.
+
+  - task: AzureFileCopy@6 # Use Azure File Copy task
+    displayName: "Copy artifacts to $(storageAccount)" # Display name for the step
+    inputs:
+      azureSubscription: "$(azServiceConnection)" # Azure subscription to use
+      blobPrefix: "$(Build.DefinitionName)/$(Build.BuildId)" # Prefix for the blob names
+      containerName: $(stgAccContainer) # Name of the storage container
+      destination: "AzureBlob" # Copy to Azure Blob storage
+      sourcePath: "$(Build.ArtifactStagingDirectory)/*" # Source path for the artifacts
+      storage: $(storageAccount) # Storage account to copy the artifacts to
+    # Log the status of artifact download and storage account operations
+
+
+  - task: AzureCLI@2 # Use Azure CLI task
+    displayName: Remove Public Access from Azure DevOps Export Storage Account # Display name for the step
+    condition: succeededOrFailed() # Run whether the previous step succeeded or failed
+    inputs:
+      azureSubscription: "$(azServiceConnection)" # Azure subscription to use
+      scriptType: bash # Use Bash script
+      scriptLocation: inlineScript # Script location is inline
+      inlineScript: |
+        az storage account update --name "${storageAccount}" --resource-group "${storageAccountRG}" --default-action Deny  # Remove public access from the storage account
