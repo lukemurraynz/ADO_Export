@@ -29,15 +29,6 @@ steps:
       PAT: $(PAT) # Personal Access Token for authentication
       AzDevOpsOrg: $(AzDevOpsOrg) # Azure DevOps organization
 
-  # Log the end of the repository cloning process
-  - task: PowerShell@2
-    displayName: 'Log End of Repository Cloning Process'
-    condition: succeeded()
-    inputs:
-      targetType: 'inline'
-      script: |
-        Write-Host "Repository cloning process completed"
-
   - task: AzureCLI@2 # Use Azure CLI task
     displayName: Allow Public Access to Azure DevOps Export Storage Account for upload # Display name for the step
     condition: succeeded() # Run only if the previous step succeeded
@@ -46,7 +37,10 @@ steps:
       scriptType: bash # Use Bash script
       scriptLocation: inlineScript # Script location is inline
       inlineScript: |
-        az storage account update --name "${storageAccount}"  --resource-group "${storageAccountRG}" --default-action Allow  # Allow public access to the storage account
+        az storage account update --name "${storageAccount}"  --resource-group "${storageAccountRG}" --default-action Allow
+    env:
+      storageAccount: $(storageAccount) # Personal Access Token for authentication
+      storageAccountRG: $(storageAccountRG) # Azure DevOps organization
 
   - task: AzureCLI@2 # Use Azure CLI task
     displayName: "Check Storage Network Access" # Display name for the step
@@ -59,9 +53,10 @@ steps:
       scriptType: bash # Use Bash script
       scriptLocation: inlineScript # Script location is inline
       inlineScript: |
+        set -x
         echo -e "Setting up authentication..."
-        export AZURE_STORAGE_ACCOUNT=${storageAccount}
-        export AZURE_STORAGE_KEY=$(az storage account keys list --account-name ${storageAccount} --query '[0].value' --output tsv)
+        AZURE_STORAGE_ACCOUNT=${storageAccount}
+        AZURE_STORAGE_KEY=$(az storage account keys list --account-name ${storageAccount} --query '[0].value' --output tsv)
         echo -e "Checking storage account access every 60 seconds..."
         sleep 10
         for i in {1..60}; do
@@ -102,4 +97,7 @@ steps:
       scriptType: bash # Use Bash script
       scriptLocation: inlineScript # Script location is inline
       inlineScript: |
-        az storage account update --name "${storageAccount}" --resource-group "${storageAccountRG}" --default-action Deny  # Remove public access from the storage account
+        az storage account update --name "${storageAccount}" --resource-group "${storageAccountRG}" --default-action Deny
+    env:
+      storageAccount: $(storageAccount) # Personal Access Token for authentication
+      storageAccountRG: $(storageAccountRG) # Azure DevOps organization
